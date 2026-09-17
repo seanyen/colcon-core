@@ -25,14 +25,14 @@ class PackageDiscoveryExtensionPoint:
     """
 
     """The version of the discovery extension interface."""
-    EXTENSION_POINT_VERSION = '1.0'
+    EXTENSION_POINT_VERSION = '1.1'
 
     """The default priority of discovery extensions."""
     PRIORITY = 100
 
     def has_default(self):
         """
-        Check if the extension has a default parameter is none are provided.
+        Check if the extension has a default parameter if none are provided.
 
         The method is intended to be overridden in a subclass.
 
@@ -62,7 +62,9 @@ class PackageDiscoveryExtensionPoint:
         This method must be overridden in a subclass.
 
         :param args: The parsed command line arguments
-        :returns: True if `discover()` should be called, False otherwise
+        :returns: True if `discover()` should be called, False if no
+          parameters were given, or None if this extension has no
+          parameters to be specified.
         :rtype: bool
         """
         raise NotImplementedError()
@@ -84,7 +86,7 @@ class PackageDiscoveryExtensionPoint:
         raise NotImplementedError()
 
 
-def get_package_discovery_extensions():
+def get_package_discovery_extensions(*, group_name=None):
     """
     Get the available package discovery extensions.
 
@@ -92,7 +94,9 @@ def get_package_discovery_extensions():
 
     :rtype: OrderedDict
     """
-    extensions = instantiate_extensions(__name__)
+    if group_name is None:
+        group_name = __name__
+    extensions = instantiate_extensions(group_name)
     for name, extension in extensions.items():
         extension.PACKAGE_DISCOVERY_NAME = name
     return order_extensions_by_priority(extensions)
@@ -105,7 +109,7 @@ def add_package_discovery_arguments(parser, *, extensions=None):
     :param parser: The argument parser
     :param extensions: The package discovery extensions to use, if `None` is
       passed use the extensions provided by
-      :function:`get_package_discovery_extensions`
+      :func:`get_package_discovery_extensions`
     """
     if extensions is None:
         extensions = get_package_discovery_extensions()
@@ -121,8 +125,7 @@ def add_package_discovery_arguments(parser, *, extensions=None):
             exc = traceback.format_exc()
             logger.error(
                 'Exception in package discovery extension '
-                "'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}"
-                .format_map(locals()))
+                f"'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}")
             # skip failing extension, continue with next one
         else:
             if has_default:
@@ -141,8 +144,7 @@ def add_package_discovery_arguments(parser, *, extensions=None):
             exc = traceback.format_exc()
             logger.error(
                 'Exception in package discovery extension '
-                "'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}"
-                .format_map(locals()))
+                f"'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}")
             # skip failing extension, continue with next one
 
 
@@ -163,10 +165,10 @@ def discover_packages(
     :param args: The parsed command line arguments
     :param identification_extensions: The package identification extensions to
       pass to each invocation of
-      :function:`PackageDiscoveryExtensionPoint.discover`
+      :func:`PackageDiscoveryExtensionPoint.discover`
     :param discovery_extensions: The package discovery extensions to use, if
       `None` is passed use the extensions provided by
-      :function:`get_package_discovery_extensions`
+      :func:`get_package_discovery_extensions`
     :returns: set of
       :py:class:`colcon_core.package_descriptor.PackageDescriptor`
     :rtype: set
@@ -219,12 +221,12 @@ def expand_dir_wildcards(paths):
 def _get_extensions_with_parameters(
     args, discovery_extensions
 ):
+    explicitly_specified = False
     with_parameters = OrderedDict()
     for extension in discovery_extensions.values():
         logger.log(
-            1,
-            'discover_packages({extension.PACKAGE_DISCOVERY_NAME}) check '
-            'parameters'.format_map(locals()))
+            1, f'discover_packages({extension.PACKAGE_DISCOVERY_NAME}) check '
+            'parameters')
         try:
             has_parameter = extension.has_parameters(args=args)
         except Exception as e:  # noqa: F841
@@ -232,13 +234,15 @@ def _get_extensions_with_parameters(
             exc = traceback.format_exc()
             logger.error(
                 'Exception in package discovery extension '
-                "'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}"
-                .format_map(locals()))
+                f"'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}")
             # skip failing extension, continue with next one
         else:
             if has_parameter:
-                with_parameters[extension.PACKAGE_DISCOVERY_NAME] = extension
-    return with_parameters
+                explicitly_specified = True
+            elif has_parameter is not None:
+                continue
+            with_parameters[extension.PACKAGE_DISCOVERY_NAME] = extension
+    return with_parameters if explicitly_specified else OrderedDict()
 
 
 def _discover_packages(
@@ -262,8 +266,7 @@ def _discover_packages(
             exc = traceback.format_exc()
             logger.error(
                 'Exception in package discovery extension '
-                "'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}"
-                .format_map(locals()))
+                f"'{extension.PACKAGE_DISCOVERY_NAME}': {e}\n{exc}")
             # skip failing extension, continue with next one
             continue
         else:

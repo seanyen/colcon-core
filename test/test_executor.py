@@ -21,8 +21,8 @@ from colcon_core.executor import OnError
 from colcon_core.subprocess import SIGINT_RESULT
 import pytest
 
-from .entry_point_context import EntryPointContext
 from .environment_context import EnvironmentContext
+from .extension_point_context import ExtensionPointContext
 from .run_until_complete import run_until_complete
 
 
@@ -57,7 +57,7 @@ def test_job():
     job.set_event_queue(event_queue)
     assert len(events) == 1
     assert isinstance(events[-1][0], JobQueued)
-    assert events[-1][0].identifier == 'name'
+    assert events[-1][0].identifier == 'id'
     assert events[-1][0].dependencies == task_context.dependencies
     assert events[-1][1] == job
 
@@ -66,10 +66,10 @@ def test_job():
     assert rc == 0
     assert len(events) == 3
     assert isinstance(events[-2][0], JobStarted)
-    assert events[-2][0].identifier == 'name'
+    assert events[-2][0].identifier == 'id'
     assert events[-2][1] == job
     assert isinstance(events[-1][0], JobEnded)
-    assert events[-1][0].identifier == 'name'
+    assert events[-1][0].identifier == 'id'
     assert events[-1][0].rc == 0
     assert events[-1][1] == job
 
@@ -80,10 +80,10 @@ def test_job():
     assert rc is SIGINT_RESULT
     assert len(events) == 5
     assert isinstance(events[-2][0], JobStarted)
-    assert events[-2][0].identifier == 'name'
+    assert events[-2][0].identifier == 'id'
     assert events[-2][1] == job
     assert isinstance(events[-1][0], JobEnded)
-    assert events[-1][0].identifier == 'name'
+    assert events[-1][0].identifier == 'id'
     assert events[-1][0].rc is SIGINT_RESULT
     assert events[-1][1] == job
 
@@ -94,13 +94,13 @@ def test_job():
         run_until_complete(job())
     assert len(events) == 8
     assert isinstance(events[-3][0], JobStarted)
-    assert events[-3][0].identifier == 'name'
+    assert events[-3][0].identifier == 'id'
     assert events[-3][1] == job
     assert isinstance(events[-2][0], StderrLine)
     assert events[-2][0].line.endswith(b'\nRuntimeError: custom exception\n')
     assert events[-2][1] == job
     assert isinstance(events[-1][0], JobEnded)
-    assert events[-1][0].identifier == 'name'
+    assert events[-1][0].identifier == 'id'
     assert events[-1][0].rc == 1
     assert events[-1][1] == job
 
@@ -111,10 +111,10 @@ def test_job():
     assert rc == 2
     assert len(events) == 10
     assert isinstance(events[-2][0], JobStarted)
-    assert events[-2][0].identifier == 'name'
+    assert events[-2][0].identifier == 'id'
     assert events[-2][1] == job
     assert isinstance(events[-1][0], JobEnded)
-    assert events[-1][0].identifier == 'name'
+    assert events[-1][0].identifier == 'id'
     assert events[-1][0].rc == 2
     assert events[-1][1] == job
 
@@ -123,9 +123,12 @@ def test_interface():
     interface = ExecutorExtensionPoint()
     interface._flush()
     event_controller = Mock()
+    event_controller.get_queue.returns = Mock()
     interface.set_event_controller(event_controller)
+    interface.put_event_into_queue(object())
     interface._flush()
     assert event_controller.flush.call_count == 1
+    assert event_controller.get_queue().put.call_count == 1
 
 
 class Extension1(ExecutorExtensionPoint):
@@ -143,7 +146,7 @@ class Extension3(ExecutorExtensionPoint):
 def test_add_executor_arguments():
     parser = ArgumentParser()
     # extensions with the same priority
-    with EntryPointContext(
+    with ExtensionPointContext(
         extension1=Extension1, extension2=Extension2, extension3=Extension3
     ):
         with pytest.raises(AssertionError) as e:
@@ -152,13 +155,13 @@ def test_add_executor_arguments():
             str(e.value)
 
     # no extensions
-    with EntryPointContext():
+    with ExtensionPointContext():
         with pytest.raises(AssertionError) as e:
             add_executor_arguments(parser)
         assert 'No executor extensions found' in str(e.value)
 
     # choose executor by environment variable
-    with EntryPointContext(extension1=Extension1, extension2=Extension2):
+    with ExtensionPointContext(extension1=Extension1, extension2=Extension2):
         extensions = get_executor_extensions()
         extensions[110]['extension2'].add_arguments = Mock(
             side_effect=RuntimeError('custom exception'))
@@ -178,7 +181,7 @@ def test_add_executor_arguments():
 
     # choose default executor
     parser = ArgumentParser()
-    with EntryPointContext(extension1=Extension1, extension2=Extension2):
+    with ExtensionPointContext(extension1=Extension1, extension2=Extension2):
         add_executor_arguments(parser)
     args = parser.parse_args([])
     assert args.executor == 'extension2'
@@ -202,7 +205,9 @@ def test_execute_jobs():
     with patch(
         'colcon_core.executor.create_event_reactor', return_value=event_reactor
     ):
-        with EntryPointContext(extension1=Extension1, extension2=Extension2):
+        with ExtensionPointContext(
+            extension1=Extension1, extension2=Extension2
+        ):
             # no extension selected
             with pytest.raises(AssertionError):
                 execute_jobs(context, jobs)

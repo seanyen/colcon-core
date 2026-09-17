@@ -44,7 +44,7 @@ class EventHandlerExtensionPoint:
         raise NotImplementedError()
 
 
-def get_event_handler_extensions(*, context):
+def get_event_handler_extensions(*, context, group_name=None):
     """
     Get the available event handler extensions.
 
@@ -52,7 +52,9 @@ def get_event_handler_extensions(*, context):
 
     :rtype: OrderedDict
     """
-    extensions = instantiate_extensions(__name__)
+    if group_name is None:
+        group_name = __name__
+    extensions = instantiate_extensions(group_name)
     for name, extension in extensions.items():
         extension.EVENT_HANDLER_NAME = name
         extension.context = context
@@ -81,7 +83,7 @@ def add_event_handler_arguments(parser):
         # since they are already listed in the defaults
         if desc:
             # it requires a custom formatter to maintain the newline
-            descriptions += '\n* {key}: {desc}'.format_map(locals())
+            descriptions += f'\n* {key}: {desc}'
 
     argument = group.add_argument(
         '--event-handlers',
@@ -91,7 +93,6 @@ def add_event_handler_arguments(parser):
              (' '.join(defaults), descriptions))
 
     def choices_completer(prefix, **kwargs):
-        nonlocal completions
         return (c for c in completions if c.startswith(prefix))
 
     argument.completer = choices_completer
@@ -125,8 +126,7 @@ def format_duration(seconds, *, fixed_decimal_points=None):
     """
     if seconds < 0.0:
         raise ValueError(
-            "The duration '{seconds}' must be a non-negative number"
-            .format_map(locals()))
+            f"The duration '{seconds}' must be a non-negative number")
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
 
@@ -154,9 +154,9 @@ def format_duration(seconds, *, fixed_decimal_points=None):
         minutes = 0.0
         hours += 1
 
-    format_string = '{seconds:.%sf}s' % decimal_points
+    format_string = f'{seconds:.{decimal_points}f}s'
     if hours or minutes:
-        format_string = '{minutes:.0f}min ' + format_string
+        format_string = f'{minutes:.0f}min ' + format_string
         if hours:
-            format_string = '{hours:.0f}h ' + format_string
-    return format_string.format_map(locals())
+            format_string = f'{hours:.0f}h ' + format_string
+    return format_string

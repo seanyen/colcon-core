@@ -42,7 +42,7 @@ class EventReactor:
         """
         Process events and notify all observers.
 
-        If no events are being process for :py:attribute:`TIMER_INTERVAL`
+        If no events are being process for :attr:`TIMER_INTERVAL`
         seconds a :class:`TimerEvent` is being generated and processed.
 
         An :class:`EventReactorShutdown` event will stop the loop.
@@ -80,8 +80,7 @@ class EventReactor:
             except Exception as e:  # noqa: F841
                 # catch exceptions raised in event handler extension
                 msg = 'Exception in event handler extension ' \
-                    "'{observer.EVENT_HANDLER_NAME}': {e}" \
-                    .format_map(locals())
+                    f"'{observer.EVENT_HANDLER_NAME}': {e}"
                 if not isinstance(e, RuntimeError):
                     msg += '\n' + traceback.format_exc()
                 logger.error(msg)

@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import sys
+import warnings
 
 from colcon_core import shell
 from colcon_core.plugin_system import satisfies_version
@@ -10,6 +11,7 @@ from colcon_core.plugin_system import SkipExtensionException
 from colcon_core.prefix_path import get_chained_prefix_path
 from colcon_core.shell import check_dependency_availability
 from colcon_core.shell import get_environment_variables
+from colcon_core.shell import get_null_separated_environment_variables
 from colcon_core.shell import logger
 from colcon_core.shell import ShellExtensionPoint
 from colcon_core.shell.template import expand_template
@@ -26,14 +28,12 @@ class ShShell(ShellExtensionPoint):
     FORMAT_STR_USE_ENV_VAR = '${name}'
     FORMAT_STR_INVOKE_SCRIPT = 'COLCON_CURRENT_PREFIX="{prefix}" ' \
         '_colcon_prefix_sh_source_script "{script_path}"'
-    FORMAT_STR_REMOVE_LEADING_SEPARATOR = 'if [ "$(echo -n ${name} | ' \
-        'head -c 1)" = ":" ]; then export {name}=${{{name}#?}} ; fi'
-    FORMAT_STR_REMOVE_TRAILING_SEPARATOR = 'if [ "$(echo -n ${name} | ' \
-        'tail -c 1)" = ":" ]; then export {name}=${{{name}%?}} ; fi'
+    FORMAT_STR_REMOVE_LEADING_SEPARATOR = 'export {name}=${{{name}#:}}'
+    FORMAT_STR_REMOVE_TRAILING_SEPARATOR = 'export {name}=${{{name}%:}}'
 
     def __init__(self):  # noqa: D107
         super().__init__()
-        satisfies_version(ShellExtensionPoint.EXTENSION_POINT_VERSION, '^2.1')
+        satisfies_version(ShellExtensionPoint.EXTENSION_POINT_VERSION, '^2.2')
         if sys.platform == 'win32' and not shell.use_all_shell_extensions:
             raise SkipExtensionException('Not used on Windows systems')
 
@@ -69,6 +69,12 @@ class ShShell(ShellExtensionPoint):
                 'prefix_script_no_ext': 'local_setup',
             })
 
+        return [
+            prefix_env_path,
+            prefix_util_path,
+            prefix_chain_env_path,
+        ]
+
     def create_package_script(  # noqa: D102
         self, prefix_path, pkg_name, hooks
     ):
@@ -82,6 +88,7 @@ class ShShell(ShellExtensionPoint):
                 'hooks': list(filter(
                     lambda hook: str(hook[0]).endswith('.sh'), hooks)),
             })
+        return [pkg_env_path]
 
     def create_hook_set_value(  # noqa: D102
         self, env_hook_name, prefix_path, pkg_name, name, value,
@@ -90,7 +97,7 @@ class ShShell(ShellExtensionPoint):
             ('%s.sh' % env_hook_name)
         logger.info("Creating environment hook '%s'" % hook_path)
         if value == '':
-            value = '$COLCON_PREFIX_PATH'
+            value = '$COLCON_CURRENT_PREFIX'
         expand_template(
             Path(__file__).parent / 'template' / 'hook_set_value.sh.em',
             hook_path, {'name': name, 'value': value})
@@ -143,14 +150,26 @@ class ShShell(ShellExtensionPoint):
             hook_path,
             {'dependencies': dependencies})
 
-        cmd = ['.', str(hook_path), '&&', 'env']
-        env = await get_environment_variables(cmd, cwd=str(build_base))
+        # Attempt to use null-separated env output, but fall back to the
+        # best-effort implementation if not supported (i.e. older macOS)
+        cmd = ['.', str(hook_path), '&&', 'env', '-0']
+        try:
+            env = await get_null_separated_environment_variables(
+                cmd, cwd=str(build_base))
+        except AssertionError:
+            warnings.warn(
+                'This platform does not support null-separated output from '
+                "'env', and may not be supported in future releases of "
+                'colcon-core. See colcon/colcon-core#684 for details.',
+                DeprecationWarning)
+            cmd.pop()
+            env = await get_environment_variables(cmd, cwd=str(build_base))
 
         # write environment variables to file for debugging
         env_path = build_base / ('colcon_command_prefix_%s.sh.env' % task_name)
         with env_path.open('w') as h:
             for key in sorted(env.keys()):
                 value = env[key]
-                h.write('{key}={value}\n'.format_map(locals()))
+                h.write(f'{key}={value}\n')
 
         return env

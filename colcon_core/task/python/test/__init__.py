@@ -4,7 +4,8 @@
 import re
 import traceback
 
-from colcon_core.entry_point import load_entry_points
+from colcon_core.environment_variable import EnvironDict
+from colcon_core.extension_point import load_extension_points
 from colcon_core.logging import colcon_logger
 from colcon_core.package_augmentation.python import extract_dependencies
 from colcon_core.plugin_system import get_first_line_doc
@@ -29,11 +30,9 @@ class PythonTestTask(TaskExtensionPoint):
         add_python_testing_step_arguments(parser)
 
     async def test(self, *, additional_hooks=None):  # noqa: D102
-        pkg = self.context.pkg
         args = self.context.args
 
-        logger.info(
-            "Testing Python package in '{args.path}'".format_map(locals()))
+        logger.info(f"Testing Python package in '{args.path}'")
 
         try:
             env = await get_command_environment(
@@ -49,14 +48,12 @@ class PythonTestTask(TaskExtensionPoint):
             extension = get_python_testing_step_extension(key)
             if extension is None:
                 logger.error(
-                    "Failed to load Python testing step extension '{key}'"
-                    .format_map(locals()))
+                    f"Failed to load Python testing step extension '{key}'")
                 return 1
         else:
             extensions = get_python_testing_step_extensions()
             for key, extension in extensions.items():
-                logger.log(
-                    1, "test() by extension '{key}'".format_map(locals()))
+                logger.log(1, f"test() by extension '{key}'")
                 try:
                     matched = extension.match(self.context, env, setup_py_data)
                 except Exception as e:  # noqa: F841
@@ -64,28 +61,29 @@ class PythonTestTask(TaskExtensionPoint):
                     exc = traceback.format_exc()
                     logger.error(
                         'Exception in Python testing step extension '
-                        "'{extension.STEP_TYPE}': {e}\n{exc}"
-                        .format_map(locals()))
+                        f"'{extension.STEP_TYPE}': {e}\n{exc}")
                     # skip failing extension, continue with next one
                     continue
                 if matched:
                     break
             else:
                 logger.warning(
-                    "No Python Testing Step extension matched in '{args.path}'"
-                    .format_map(locals()))
+                    'No Python Testing Step extension matched in '
+                    f"'{args.path}'")
                 return
 
-        logger.log(
-            1, "test.step() by extension '{key}'".format_map(locals()))
+        logger.log(1, f"test.step() by extension '{key}'")
         try:
+            if 'PYTHONDONTWRITEBYTECODE' not in env:
+                env = EnvironDict(env)
+                env['PYTHONDONTWRITEBYTECODE'] = '1'
             return await extension.step(self.context, env, setup_py_data)
         except Exception as e:  # noqa: F841
             # catch exceptions raised in python testing step extension
             exc = traceback.format_exc()
             logger.error(
                 'Exception in Python testing step extension '
-                "'{extension.STEP_TYPE}': {e}\n{exc}".format_map(locals()))
+                f"'{extension.STEP_TYPE}': {e}\n{exc}")
             return 1
 
 
@@ -140,7 +138,7 @@ class PythonTestingStepExtensionPoint:
         raise NotImplementedError()
 
 
-def get_python_testing_step_extensions():
+def get_python_testing_step_extensions(*, group_name=None):
     """
     Get the available Python testing step extensions.
 
@@ -148,8 +146,9 @@ def get_python_testing_step_extensions():
 
     :rtype: OrderedDict
     """
-    extensions = instantiate_extensions(
-        'colcon_core.python_testing', unique_instance=False)
+    if group_name is None:
+        group_name = 'colcon_core.python_testing'
+    extensions = instantiate_extensions(group_name, unique_instance=False)
     for name in list(extensions.keys()):
         extension = extensions[name]
         extension.STEP_TYPE = name
@@ -171,13 +170,13 @@ def add_python_testing_step_arguments(parser):
             # to mention the available options
             desc = '<no description>'
         # it requires a custom formatter to maintain the newline
-        descriptions += '\n* {key}: {desc}'.format_map(locals())
+        descriptions += f'\n* {key}: {desc}'
 
     parser.add_argument(
         '--python-testing', type=str, choices=sorted(extensions.keys()),
         help='The Python testing framework to use (default: determined '
              'based on the packages `tests_require`)'
-             '{descriptions}'.format_map(locals()))
+             f'{descriptions}')
 
     for extension in extensions.values():
         try:
@@ -188,7 +187,7 @@ def add_python_testing_step_arguments(parser):
             exc = traceback.format_exc()
             logger.error(
                 'Exception in Python testing step extension '
-                "'{extension.STEP_TYPE}': {e}\n{exc}".format_map(locals()))
+                f"'{extension.STEP_TYPE}': {e}\n{exc}")
             # skip failing extension, continue with next one
 
 
@@ -200,7 +199,7 @@ def get_python_testing_step_extension(step_name):
     :returns: A unique instance of the extension, otherwise None
     """
     group_name = 'colcon_core.python_testing'
-    extension_types = load_entry_points(group_name)
+    extension_types = load_extension_points(group_name)
     extension_names = list(extension_types.keys())
     if step_name not in extension_names:
         return None

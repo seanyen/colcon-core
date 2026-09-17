@@ -9,6 +9,7 @@ from colcon_core.event.job import JobStarted
 from colcon_core.event.test import TestFailure
 from colcon_core.event_handler import EventHandlerExtensionPoint
 from colcon_core.event_handler import format_duration
+from colcon_core.output_style import Style
 from colcon_core.plugin_system import satisfies_version
 from colcon_core.subprocess import SIGINT_RESULT
 
@@ -34,36 +35,38 @@ class ConsoleStartEndEventHandler(EventHandlerExtensionPoint):
         data = event[0]
 
         if isinstance(data, JobStarted):
-            print(
-                'Starting >>> {data.identifier}'.format_map(locals()),
-                flush=True)
+            job_id = Style.PackageOrJobName(data.identifier)
             self._start_times[data.identifier] = time.monotonic()
+            msg = 'Starting ' + Style.Pictogram('>>>') + f' {job_id}'
+            print(Style.SectionStart(msg), flush=True)
 
         elif isinstance(data, TestFailure):
             job = event[1]
             self._with_test_failures.add(job)
 
         elif isinstance(data, JobEnded):
+            job_id = Style.PackageOrJobName(data.identifier)
             duration = \
                 time.monotonic() - self._start_times[data.identifier]
-            duration_string = format_duration(duration)
+            duration_string = Style.Measurement(format_duration(duration))
             if not data.rc:
-                msg = 'Finished <<< {data.identifier} [{duration_string}]' \
-                    .format_map(locals())
+                msg = 'Finished ' + Style.Pictogram('<<<') + \
+                    f' {job_id} [{duration_string}]'
                 job = event[1]
                 if job in self._with_test_failures:
-                    msg += '\t[ with test failures ]'
+                    msg += Style.Warning('\t[ with test failures ]')
                 writable = sys.stdout
 
             elif data.rc == SIGINT_RESULT:
-                msg = 'Aborted  <<< {data.identifier} [{duration_string}]' \
-                    .format_map(locals())
+                msg = Style.Warning('Aborted') + '  ' + \
+                    Style.Pictogram('<<<') + f' {job_id} [{duration_string}]'
                 writable = sys.stdout
 
             else:
-                msg = 'Failed   <<< {data.identifier} ' \
-                    '[{duration_string}, exited with code {data.rc}]' \
-                    .format_map(locals())
+                msg = Style.Critical('Failed') + '   ' + \
+                    Style.Pictogram('<<<') + f' {job_id} ' \
+                    f'[{duration_string}, ' + \
+                    Style.Error(f'exited with code {data.rc}') + ']'
                 writable = sys.stderr
 
-            print(msg, file=writable, flush=True)
+            print(Style.SectionEnd(msg), file=writable, flush=True)

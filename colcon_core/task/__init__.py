@@ -1,6 +1,7 @@
 # Copyright 2016-2018 Dirk Thomas
 # Licensed under the Apache License, Version 2.0
 
+from collections import OrderedDict
 import os
 import shutil
 import sys
@@ -60,7 +61,33 @@ class TaskExtensionPoint:
     """
 
     """The version of the task extension interface."""
-    EXTENSION_POINT_VERSION = '1.0'
+    EXTENSION_POINT_VERSION = '1.1'
+
+    @classmethod
+    def create_contexts(cls, *, pkg, args, dependencies):
+        """
+        Construct TaskContext instances for a package.
+
+        A :py:class:`~colcon_core.executor.Job` will be created for each
+        :py:class:`~colcon_core.task.TaskContext` that is returned from this
+        method, with :py:attr:`~colcon_core.executor.Job.identifier`
+        corresponding to the key. Implementations may return any number of
+        jobs, but care should be taken to ensure that only one of the jobs is
+        executed at any given time, presumably by ensuring that dependencies
+        exist between them.
+
+        :param pkg: The package descriptor
+        :param args: The parsed command line arguments
+        :param dependencies: The ordered dictionary mapping dependency names to
+          their paths
+        :returns: Mapping of job identifier to task context
+        :rtype: collections.OrderedDict
+        """
+        return OrderedDict((
+            (pkg.name, TaskContext(
+                pkg=pkg, args=args,
+                dependencies=dependencies)),
+        ))
 
     def add_arguments(self, *, parser):
         """
@@ -138,7 +165,7 @@ async def check_call(
     :param shell: whether to use the shell as the program to execute
     :param use_pty: whether to use a pseudo terminal
     :returns: the result of the completed process
-    :rtype subprocess.CompletedProcess
+    :rtype: subprocess.CompletedProcess
     """
     warnings.warn(
         'colcon_core.task.check_call() has been deprecated, use '
@@ -148,7 +175,7 @@ async def check_call(
 
 
 async def run(
-    context, cmd, *, cwd=None, env=None, shell=False, use_pty=None
+    context, cmd, *, use_pty=None, capture_output=None, **other_popen_kwargs
 ):
     """
     Run the command described by cmd.
@@ -158,13 +185,15 @@ async def run(
     All output to `stdout` and `stderr` is posted as `StdoutLine` and
     `StderrLine` events to the event queue.
 
+    See the documentation of `subprocess.Popen()
+    <https://docs.python.org/3/library/subprocess.html#subprocess.Popen>` for
+    other parameters.
+
     :param cmd: The command and its arguments
-    :param cwd: the working directory for the subprocess
-    :param env: a dictionary with environment variables
-    :param shell: whether to use the shell as the program to execute
     :param use_pty: whether to use a pseudo terminal
+    :param capture_output: whether to store stdout and stderr
     :returns: the result of the completed process
-    :rtype subprocess.CompletedProcess
+    :rtype: subprocess.CompletedProcess
     """
     def stdout_callback(line):
         context.put_event_into_queue(StdoutLine(line))
@@ -172,11 +201,16 @@ async def run(
     def stderr_callback(line):
         context.put_event_into_queue(StderrLine(line))
 
+    cwd = other_popen_kwargs.get('cwd', None)
+    env = other_popen_kwargs.get('env', None)
+    shell = other_popen_kwargs.get('shell', False)
+
     context.put_event_into_queue(
         Command(cmd, cwd=cwd, env=env, shell=shell))
     completed = await colcon_core_subprocess_run(
         cmd, stdout_callback, stderr_callback,
-        cwd=cwd, env=env, shell=shell, use_pty=use_pty)
+        use_pty=use_pty, capture_output=capture_output,
+        **other_popen_kwargs)
     context.put_event_into_queue(
         CommandEnded(
             cmd, cwd=cwd, env=env, shell=shell,
@@ -218,8 +252,7 @@ def add_task_arguments(parser, task_name):
     extensions = get_task_extensions(task_name, unique_instance=True)
     for extension_name, extension in extensions.items():
         group = parser.add_argument_group(
-            title="Arguments for '{extension_name}' packages"
-            .format_map(locals()))
+            title=f"Arguments for '{extension_name}' packages")
         try:
             retval = extension.add_arguments(parser=group)
             assert retval is None, 'add_arguments() should return None'
@@ -227,9 +260,8 @@ def add_task_arguments(parser, task_name):
             # catch exceptions raised in task extension
             exc = traceback.format_exc()
             logger.error(
-                'Exception in task extension '
-                "'{extension.TASK_NAME}.{extension.PACKAGE_TYPE}': {e}\n{exc}"
-                .format_map(locals()))
+                f"Exception in task extension '{extension.TASK_NAME}."
+                f"{extension.PACKAGE_TYPE}': {e}\n{exc}")
             # skip failing extension, continue with next one
 
 

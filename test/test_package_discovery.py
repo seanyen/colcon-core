@@ -2,8 +2,6 @@
 # Licensed under the Apache License, Version 2.0
 
 import os
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -16,7 +14,7 @@ from colcon_core.package_discovery import expand_dir_wildcards
 from colcon_core.package_discovery import get_package_discovery_extensions
 from colcon_core.package_discovery import PackageDiscoveryExtensionPoint
 
-from .entry_point_context import EntryPointContext
+from .extension_point_context import ExtensionPointContext
 
 
 class Extension1(PackageDiscoveryExtensionPoint):
@@ -36,7 +34,7 @@ class Extension4(PackageDiscoveryExtensionPoint):
 
 
 def test_get_package_discovery_extensions():
-    with EntryPointContext(
+    with ExtensionPointContext(
         extension1=Extension1, extension2=Extension2,
         extension3=Extension3, extension4=Extension4,
     ):
@@ -47,7 +45,7 @@ def test_get_package_discovery_extensions():
 
 def test_add_package_discovery_arguments():
     parser = Mock()
-    with EntryPointContext(
+    with ExtensionPointContext(
         extension1=Extension1, extension2=Extension2,
         extension3=Extension3, extension4=Extension4,
     ):
@@ -98,7 +96,7 @@ def test_discover_packages():
     warn.assert_called_once_with('No package discovery extensions found')
     assert descs == set()
 
-    with EntryPointContext(
+    with ExtensionPointContext(
         extension1=Extension1, extension2=Extension2,
         extension3=Extension3, extension4=Extension4,
     ):
@@ -110,6 +108,7 @@ def test_discover_packages():
             return_value={PackageDescriptor('/extension1/pkg1')})
         extensions['extension2'].discover = Mock(
             return_value={PackageDescriptor('/extension2/pkg1')})
+        extensions['extension2'].has_parameters = Mock(return_value=None)
 
         descs = discover_packages(None, None, discovery_extensions=extensions)
         assert len(descs) == 2
@@ -126,33 +125,33 @@ def test_discover_packages():
                 PackageDescriptor('/extension3/pkg2')})
 
         descs = discover_packages(None, None, discovery_extensions=extensions)
-        assert len(descs) == 2
+        assert len(descs) == 3
         expected_path = '/extension3/pkg1'.replace('/', os.sep)
         assert expected_path in (str(d.path) for d in descs)
         expected_path = '/extension3/pkg2'.replace('/', os.sep)
         assert expected_path in (str(d.path) for d in descs)
+        expected_path = '/extension2/pkg1'.replace('/', os.sep)
+        assert expected_path in (str(d.path) for d in descs)
 
 
-def test_expand_dir_wildcards():
-    with TemporaryDirectory(prefix='test_colcon_') as prefix_path:
-        prefix_path = Path(prefix_path)
-        (prefix_path / 'one').mkdir()
-        (prefix_path / 'two').mkdir()
-        (prefix_path / 'three').touch()
+def test_expand_dir_wildcards(tmp_path):
+    (tmp_path / 'one').mkdir()
+    (tmp_path / 'two').mkdir()
+    (tmp_path / 'three').touch()
 
-        paths = [
-            '/some/path',
-            str(prefix_path / '*')
-        ]
-        expand_dir_wildcards(paths)
-        assert len(paths) == 3
-        assert paths[0] == '/some/path'
-        assert paths[1] == str((prefix_path / 'one'))
-        assert paths[2] == str((prefix_path / 'two'))
+    paths = [
+        '/some/path',
+        str(tmp_path / '*')
+    ]
+    expand_dir_wildcards(paths)
+    assert len(paths) == 3
+    assert paths[0] == '/some/path'
+    assert paths[1] == str((tmp_path / 'one'))
+    assert paths[2] == str((tmp_path / 'two'))
 
 
 def test__get_extensions_with_parameters():
-    with EntryPointContext(
+    with ExtensionPointContext(
         extension1=Extension1, extension2=Extension2,
         extension3=Extension3, extension4=Extension4,
     ):
@@ -178,7 +177,7 @@ def test__discover_packages():
     descs = _discover_packages(None, None, {})
     assert descs == set()
 
-    with EntryPointContext(
+    with ExtensionPointContext(
         extension1=Extension1, extension2=Extension2,
         extension3=Extension3, extension4=Extension4,
     ):

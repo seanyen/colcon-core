@@ -5,14 +5,18 @@ from collections import OrderedDict
 import os
 import types
 
+from colcon_core.argument_default import wrap_default_value
 from colcon_core.argument_parser.destination_collector \
     import DestinationCollectorDecorator
+from colcon_core.argument_type import get_cwd_path_resolver
+from colcon_core.dependency_descriptor import DependencyDescriptor
 from colcon_core.event.test import TestFailure
 from colcon_core.event_handler import add_event_handler_arguments
 from colcon_core.executor import add_executor_arguments
 from colcon_core.executor import execute_jobs
 from colcon_core.executor import Job
 from colcon_core.executor import OnError
+from colcon_core.feature_flags import is_feature_flag_set
 from colcon_core.logging import colcon_logger
 from colcon_core.package_selection import add_arguments \
     as add_packages_arguments
@@ -20,7 +24,6 @@ from colcon_core.package_selection import get_packages
 from colcon_core.plugin_system import satisfies_version
 from colcon_core.task import add_task_arguments
 from colcon_core.task import get_task_extension
-from colcon_core.task import TaskContext
 from colcon_core.verb import check_and_mark_build_tool
 from colcon_core.verb import check_and_mark_install_layout
 from colcon_core.verb import update_object
@@ -85,19 +88,25 @@ class TestVerb(VerbExtensionPoint):
     def add_arguments(self, *, parser):  # noqa: D102
         parser.add_argument(
             '--build-base',
-            default='build',
-            help='The base path for all build directories (default: build)')
+            default=wrap_default_value('build'),
+            type=get_cwd_path_resolver(),
+            help='The base path for all build directories '
+                 '(default: %(default)s)')
         parser.add_argument(
             '--install-base',
-            default='install',
-            help='The base path for all install prefixes (default: install)')
+            default=wrap_default_value('install'),
+            type=get_cwd_path_resolver(),
+            help='The base path for all install prefixes '
+                 '(default: %(default)s)')
         parser.add_argument(
             '--merge-install',
             action='store_true',
             help='Merge all install prefixes into a single location')
         parser.add_argument(
             '--test-result-base',
-            help='The base path for all test results (default: --build-base)')
+            type=get_cwd_path_resolver(),
+            help='The base path for all test results '
+                 '(default: same as `--build-base`)')
         group = parser.add_mutually_exclusive_group()
         group.add_argument(
             '--retest-until-fail',
@@ -149,11 +158,8 @@ class TestVerb(VerbExtensionPoint):
             any_test_failures = False
 
             def check_for_test_failures(put_event_into_queue):
-                nonlocal any_test_failures
-
                 def put_event_into_queue_(self, event):
                     nonlocal any_test_failures
-                    nonlocal put_event_into_queue
                     if isinstance(event, TestFailure):
                         any_test_failures = True
                     return put_event_into_queue(event)
@@ -176,6 +182,7 @@ class TestVerb(VerbExtensionPoint):
 
     def _get_jobs(self, args, decorators, install_base):
         jobs = OrderedDict()
+        drop_test_deps = is_feature_flag_set('drop_test_deps')
         for decorator in decorators:
             if not decorator.selected:
                 continue
@@ -184,13 +191,13 @@ class TestVerb(VerbExtensionPoint):
             extension = get_task_extension('colcon_core.task.test', pkg.type)
             if not extension:
                 logger.warning(
-                    "No task extension to 'test' a '{pkg.type}' package"
-                    .format_map(locals()))
+                    f"No task extension to 'test' a '{pkg.type}' package")
                 continue
 
             recursive_dependencies = OrderedDict()
             # for testing a package include itself in the environment
-            for dep_name in decorator.recursive_dependencies + [pkg.name]:
+            self_dep = DependencyDescriptor(pkg.name)
+            for dep_name in decorator.recursive_dependencies + [self_dep]:
                 dep_path = install_base
                 if not args.merge_install:
                     dep_path = os.path.join(dep_path, dep_name)
@@ -204,16 +211,20 @@ class TestVerb(VerbExtensionPoint):
                 for k in sorted(package_args.__dict__.keys())
             ])
             logger.debug(
-                "Testing package '{pkg.name}' with the following arguments: "
-                '{{{ordered_package_args}}}'.format_map(locals()))
-            task_context = TaskContext(
+                f"Testing package '{pkg.name}' with the following arguments: "
+                f'{{{ordered_package_args}}}')
+            task_contexts = extension.create_contexts(
                 pkg=pkg, args=package_args,
                 dependencies=recursive_dependencies)
 
-            job = Job(
-                identifier=pkg.name,
-                dependencies=set(recursive_dependencies.keys()),
-                task=extension, task_context=task_context)
+            for identifier, task_context in task_contexts.items():
+                job = Job(
+                    identifier=identifier,
+                    dependencies=set(
+                        () if drop_test_deps
+                        else task_context.dependencies.keys()
+                    ),
+                    task=extension, task_context=task_context)
 
-            jobs[pkg.name] = job
+                jobs[identifier] = job
         return jobs

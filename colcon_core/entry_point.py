@@ -17,9 +17,14 @@ EXTENSION_BLOCKLIST_ENVIRONMENT_VARIABLE = EnvironmentVariable(
     'COLCON_EXTENSION_BLOCKLIST',
     'Block extensions which should not be used')
 
+# See colcon/colcon-core#562
+warnings.warn(
+    "'colcon_core.entry_point' has been deprecated, "
+    "use 'colcon_core.extension_point' instead",
+    stacklevel=2)
+
 if sys.version_info[:2] >= (3, 7):
     def __getattr__(name):
-        global EXTENSION_BLOCKLIST_ENVIRONMENT_VARIABLE
         if name == 'EXTENSION_BLACKLIST_ENVIRONMENT_VARIABLE':
             warnings.warn(
                 "'colcon_core.entry_point.EXTENSION_BLACKLIST_ENVIRONMENT_"
@@ -55,7 +60,6 @@ def get_all_entry_points():
       instances
     :rtype: dict
     """
-    global EXTENSION_POINT_GROUP_NAME
     colcon_extension_points = get_entry_points(EXTENSION_POINT_GROUP_NAME)
 
     entry_points = defaultdict(dict)
@@ -73,9 +77,9 @@ def get_all_entry_points():
                 if entry_point_name in entry_points[group_name]:
                     previous = entry_points[group_name][entry_point_name]
                     logger.error(
-                        "Entry point '{group_name}.{entry_point_name}' is "
-                        "declared multiple times, '{entry_point}' overwriting "
-                        "'{previous}'".format_map(locals()))
+                        f"Entry point '{group_name}.{entry_point_name}' is "
+                        f"declared multiple times, '{entry_point}' "
+                        f"overwriting '{previous}'")
                 entry_points[group_name][entry_point_name] = \
                     (dist, entry_point)
     return entry_points
@@ -96,9 +100,9 @@ def get_entry_points(group_name):
         if entry_point.name in entry_points:
             previous_entry_point = entry_points[entry_point.name]
             logger.error(
-                "Entry point '{group_name}.{entry_point.name}' is declared "
-                "multiple times, '{entry_point}' overwriting "
-                "'{previous_entry_point}'".format_map(locals()))
+                f"Entry point '{group_name}.{entry_point.name}' is declared "
+                f"multiple times, '{entry_point}' overwriting "
+                f"'{previous_entry_point}'")
         entry_points[entry_point.name] = entry_point
     return entry_points
 
@@ -125,8 +129,7 @@ def load_entry_points(group_name, *, exclude_names=None):
             exc = traceback.format_exc()
             logger.error(
                 'Exception loading extension '
-                "'{group_name}.{entry_point.name}': {e}\n{exc}"
-                .format_map(locals()))
+                f"'{group_name}.{entry_point.name}': {e}\n{exc}")
             # skip failing entry point, continue with next one
             continue
         extension_types[entry_point.name] = extension_type
@@ -143,7 +146,6 @@ def load_entry_point(entry_point):
       listed in the environment variable
       :const:`EXTENSION_BLOCKLIST_ENVIRONMENT_VARIABLE`
     """
-    global EXTENSION_BLOCKLIST_ENVIRONMENT_VARIABLE
     blocklist = os.environ.get(
         EXTENSION_BLOCKLIST_ENVIRONMENT_VARIABLE.name, None)
     if blocklist is None:
@@ -158,11 +160,10 @@ def load_entry_point(entry_point):
         if entry_point.group_name in blocklist:
             raise RuntimeError(
                 'The entry point group name is listed in the environment '
-                "variable '{env_var_name}'".format_map(locals()))
-        full_name = '{entry_point.group_name}.{entry_point.name}' \
-            .format_map(locals())
+                f"variable '{env_var_name}'")
+        full_name = f'{entry_point.group_name}.{entry_point.name}'
         if full_name in blocklist:
             raise RuntimeError(
                 'The entry point name is listed in the environment variable '
-                "'{env_var_name}'".format_map(locals()))
+                f"'{env_var_name}'")
     return entry_point.load()

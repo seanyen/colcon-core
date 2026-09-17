@@ -1,16 +1,16 @@
 # Copyright 2016-2018 Dirk Thomas
 # Licensed under the Apache License, Version 2.0
 
-import argparse
 from collections import OrderedDict
 import os
 import os.path
 from pathlib import Path
-import sys
 import traceback
 
+from colcon_core.argument_default import wrap_default_value
 from colcon_core.argument_parser.destination_collector \
     import DestinationCollectorDecorator
+from colcon_core.argument_type import get_cwd_path_resolver
 from colcon_core.event.job import JobUnselected
 from colcon_core.event_handler import add_event_handler_arguments
 from colcon_core.executor import add_executor_arguments
@@ -22,30 +22,14 @@ from colcon_core.package_selection import add_arguments \
     as add_packages_arguments
 from colcon_core.package_selection import get_packages
 from colcon_core.plugin_system import satisfies_version
-from colcon_core.prefix_path import get_chained_prefix_path
-from colcon_core.shell import find_installed_packages
 from colcon_core.shell import get_shell_extensions
 from colcon_core.task import add_task_arguments
 from colcon_core.task import get_task_extension
-from colcon_core.task import TaskContext
 from colcon_core.verb import check_and_mark_build_tool
 from colcon_core.verb import check_and_mark_install_layout
 from colcon_core.verb import logger
 from colcon_core.verb import update_object
 from colcon_core.verb import VerbExtensionPoint
-
-
-if sys.version_info < (3, 8):
-    # TODO(sloretz) remove when minimum supported Python version is 3.8
-    # https://stackoverflow.com/a/41153081
-    class _ExtendAction(argparse.Action):
-        """Add argparse action to extend a list."""
-
-        def __call__(self, parser, namespace, values, option_string=None):
-            """Extend the list with new arguments."""
-            items = getattr(namespace, self.dest) or []
-            items.extend(values)
-            setattr(namespace, self.dest, items)
 
 
 class BuildPackageArguments:
@@ -98,17 +82,18 @@ class BuildVerb(VerbExtensionPoint):
         satisfies_version(VerbExtensionPoint.EXTENSION_POINT_VERSION, '^1.0')
 
     def add_arguments(self, *, parser):  # noqa: D102
-        if sys.version_info < (3, 8):
-            # TODO(sloretz) remove when minimum supported Python version is 3.8
-            parser.register('action', 'extend', _ExtendAction)
         parser.add_argument(
             '--build-base',
-            default='build',
-            help='The base path for all build directories (default: build)')
+            default=wrap_default_value('build'),
+            type=get_cwd_path_resolver(),
+            help='The base path for all build directories '
+                 '(default: %(default)s)')
         parser.add_argument(
             '--install-base',
-            default='install',
-            help='The base path for all install prefixes (default: install)')
+            default=wrap_default_value('install'),
+            type=get_cwd_path_resolver(),
+            help='The base path for all install prefixes '
+                 '(default: %(default)s)')
         parser.add_argument(
             '--merge-install',
             action='store_true',
@@ -119,20 +104,15 @@ class BuildVerb(VerbExtensionPoint):
             help='Use symlinks instead of copying files where possible')
         parser.add_argument(
             '--test-result-base',
-            help='The base path for all test results (default: --build-base)')
+            type=get_cwd_path_resolver(),
+            help='The base path for all test results '
+                 '(default: same as `--build-base`)')
         parser.add_argument(
             '--continue-on-error',
             action='store_true',
             help='Continue other packages when a package fails to build '
                  '(packages recursively depending on the failed package are '
                  'skipped)')
-        parser.add_argument(
-            '--allow-overriding',
-            action='extend',
-            default=[],
-            metavar='PKG_NAME',
-            nargs='+',
-            help='Allow building packages that exist in underlay workspaces')
         add_executor_arguments(parser)
         add_event_handler_arguments(parser)
 
@@ -160,54 +140,10 @@ class BuildVerb(VerbExtensionPoint):
         jobs, unselected_packages = self._get_jobs(
             context.args, decorators, install_base)
 
-        underlay_packages = {}
-        for prefix_path in get_chained_prefix_path():
-            packages = find_installed_packages(Path(prefix_path))
-            if packages:
-                for pkg, path in packages.items():
-                    if pkg not in underlay_packages:
-                        underlay_packages[pkg] = []
-                    underlay_packages[pkg].append(str(path))
-
-        override_messages = {}
-        for overlay_package in jobs.keys():
-            if overlay_package in underlay_packages:
-                if overlay_package not in context.args.allow_overriding:
-                    override_messages[overlay_package] = (
-                        "'{overlay_package}'".format_map(locals()) +
-                        ' is in: ' +
-                        ', '.join(underlay_packages[overlay_package]))
-
-        if override_messages:
-            override_msg = (
-                'Some selected packages are already built in one or more'
-                ' underlay workspaces:'
-                '\n\t' +
-                '\n\t'.join(override_messages.values()) +
-                '\nIf a package in a merged underlay workspace is overridden'
-                ' and it installs headers, then all packages in the overlay'
-                ' must sort their include directories by workspace order.'
-                ' Failure to do so may result in build failures or undefined'
-                ' behavior at run time.'
-                '\nIf the overridden package is used by another package'
-                ' in any underlay, then the overriding package in the'
-                ' overlay must be API and ABI compatible or undefined'
-                ' behavior at run time may occur.'
-                '\n\nIf you understand the risks and want to override a'
-                ' package anyways, add the following to the command'
-                ' line:'
-                '\n\t--allow-overriding ' +
-                ' '.join(sorted(override_messages.keys())))
-
-            logger.warn(
-                override_msg + '\n\nThis may be promoted to an error in a'
-                ' future release of colcon-core.')
-
         on_error = OnError.interrupt \
             if not context.args.continue_on_error else OnError.skip_downstream
 
         def post_unselected_packages(*, event_queue):
-            nonlocal unselected_packages
             names = [pkg.name for pkg in unselected_packages]
             for name in sorted(names):
                 event_queue.put(
@@ -247,8 +183,7 @@ class BuildVerb(VerbExtensionPoint):
             extension = get_task_extension('colcon_core.task.build', pkg.type)
             if not extension:
                 logger.warning(
-                    "No task extension to 'build' a '{pkg.type}' package"
-                    .format_map(locals()))
+                    f"No task extension to 'build' a '{pkg.type}' package")
                 continue
 
             recursive_dependencies = OrderedDict()
@@ -266,18 +201,19 @@ class BuildVerb(VerbExtensionPoint):
                 for k in sorted(package_args.__dict__.keys())
             ])
             logger.debug(
-                "Building package '{pkg.name}' with the following arguments: "
-                '{{{ordered_package_args}}}'.format_map(locals()))
-            task_context = TaskContext(
+                f"Building package '{pkg.name}' with the following arguments: "
+                f'{{{ordered_package_args}}}')
+            task_contexts = extension.create_contexts(
                 pkg=pkg, args=package_args,
                 dependencies=recursive_dependencies)
 
-            job = Job(
-                identifier=pkg.name,
-                dependencies=set(recursive_dependencies.keys()),
-                task=extension, task_context=task_context)
+            for identifier, task_context in task_contexts.items():
+                job = Job(
+                    identifier=identifier,
+                    dependencies=set(task_context.dependencies.keys()),
+                    task=extension, task_context=task_context)
 
-            jobs[pkg.name] = job
+                jobs[identifier] = job
         return jobs, unselected_packages
 
     def _create_prefix_scripts(self, install_base, merge_install):
@@ -286,15 +222,16 @@ class BuildVerb(VerbExtensionPoint):
             extensions_same_prio = extensions[priority]
             for extension in extensions_same_prio.values():
                 try:
-                    retval = extension.create_prefix_script(
+                    scripts = extension.create_prefix_script(
                         Path(install_base), merge_install)
-                    assert retval is None, \
-                        'create_prefix_script() should return None'
+                    # TODO: Disallow 'None' in v3.0 of ShellExtensionPoint
+                    if scripts is not None:
+                        assert isinstance(scripts, list), \
+                            'create_prefix_script() should return a list'
                 except Exception as e:  # noqa: F841
                     # catch exceptions raised in shell extension
                     exc = traceback.format_exc()
                     logger.error(
                         'Exception in shell extension '
-                        "'{extension.SHELL_NAME}': {e}\n{exc}"
-                        .format_map(locals()))
+                        f"'{extension.SHELL_NAME}': {e}\n{exc}")
                     # skip failing extension, continue with next one

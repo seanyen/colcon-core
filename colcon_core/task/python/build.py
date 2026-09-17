@@ -1,23 +1,20 @@
 # Copyright 2016-2018 Dirk Thomas
 # Licensed under the Apache License, Version 2.0
 
+from configparser import ConfigParser
 from contextlib import suppress
-with suppress(ImportError):
-    # needed before importing distutils
-    # to avoid warning introduced in setuptools 49.2.0
-    import setuptools  # noqa: F401
-from distutils.sysconfig import get_python_lib
 import locale
 import os
 from pathlib import Path
 import shutil
 import sys
-from sys import executable
 
 from colcon_core.environment import create_environment_hooks
 from colcon_core.environment import create_environment_scripts
+from colcon_core.environment_variable import EnvironDict
 from colcon_core.logging import colcon_logger
 from colcon_core.plugin_system import satisfies_version
+from colcon_core.python_install_path import get_python_install_path
 from colcon_core.shell import create_environment_hook
 from colcon_core.shell import get_command_environment
 from colcon_core.subprocess import check_output
@@ -25,8 +22,32 @@ from colcon_core.task import run
 from colcon_core.task import TaskExtensionPoint
 from colcon_core.task.python import get_data_files_mapping
 from colcon_core.task.python import get_setup_data
+from colcon_core.task.python.template import expand_template
 
 logger = colcon_logger.getChild(__name__)
+
+_PYTHON_CMD = [
+    sys.executable,
+    '-W',
+    'ignore:setup.py install is deprecated',
+    '-W',
+    'ignore:easy_install command is deprecated',
+]
+
+
+def _get_install_scripts(path):
+    setup_cfg_path = os.path.join(path, 'setup.cfg')
+    if not os.path.exists(setup_cfg_path):
+        return
+    parser = ConfigParser()
+    parser.optionxform = str
+    with open(setup_cfg_path, encoding='utf-8') as f:
+        parser.read_file(f)
+    install_script = parser.get('install', 'install-scripts', fallback=None)
+    if install_script is None:
+        install_script = parser.get(
+            'install', 'install_scripts', fallback=None)
+    return install_script
 
 
 class PythonBuildTask(TaskExtensionPoint):
@@ -40,8 +61,7 @@ class PythonBuildTask(TaskExtensionPoint):
         pkg = self.context.pkg
         args = self.context.args
 
-        logger.info(
-            "Building Python package in '{args.path}'".format_map(locals()))
+        logger.info(f"Building Python package in '{args.path}'")
 
         try:
             env = await get_command_environment(
@@ -51,27 +71,60 @@ class PythonBuildTask(TaskExtensionPoint):
             return 1
         setup_py_data = get_setup_data(self.context.pkg, env)
 
+        # override installation locations
+        prefix_override = Path(args.build_base) / 'prefix_override'
+        expand_template(
+            Path(__file__).parent / 'template' / 'sitecustomize.py.em',
+            prefix_override / 'sitecustomize.py',
+            {
+                'current_prefix': sys.prefix,
+                'site_prefix': args.install_base,
+            })
+
         # `setup.py develop|install` requires the python lib path to exist
         python_lib = os.path.join(
             args.install_base, self._get_python_lib(args))
         os.makedirs(python_lib, exist_ok=True)
+        distutils_commands = os.path.join(
+            os.path.dirname(__file__), 'colcon_distutils_commands')
         # and being in the PYTHONPATH
-        env = dict(env)
-        env['PYTHONPATH'] = python_lib + os.pathsep + \
-            env.get('PYTHONPATH', '')
+        env = EnvironDict(env)
+        env['PYTHONPATH'] = str(prefix_override) + os.pathsep + \
+            distutils_commands + os.pathsep + \
+            python_lib + os.pathsep + env.get('PYTHONPATH', '')
+        # coverage capture interferes with sitecustomize
+        # See also: https://docs.python.org/3/library/site.html#module-site
+        # See also: colcon/colcon-core#579
+        env.pop('COV_CORE_SOURCE', None)
 
         # determine if setuptools specific commands are available
         available_commands = await self._get_available_commands(
             args.path, env)
 
-        if not args.symlink_install or 'develop' not in available_commands:
+        symlink_install = False
+        if args.symlink_install:
+            if 'develop' in available_commands:
+                available_options = await self._get_available_options(
+                    args.path, env, 'develop')
+                if '--editable' in available_options:
+                    symlink_install = True
+                else:
+                    logger.info(
+                        "No '--editable' capability in setuptools, falling "
+                        'back to full install')
+            else:
+                logger.info(
+                    "No 'develop' capability in setuptools, falling back to "
+                    'full install')
+
+        if not symlink_install:
             rc = await self._undo_develop(pkg, args, env)
             if rc:
                 return rc
 
             # invoke `setup.py install` step with lots of arguments
             # to avoid placing any files in the source space
-            cmd = [executable, 'setup.py']
+            cmd = _PYTHON_CMD + ['setup.py']
             if 'egg_info' in available_commands:
                 # `setup.py egg_info` requires the --egg-base to exist
                 os.makedirs(args.build_base, exist_ok=True)
@@ -84,19 +137,32 @@ class PythonBuildTask(TaskExtensionPoint):
             cmd += [
                 'build', '--build-base', os.path.join(
                     args.build_base, 'build'),
-                'install', '--prefix', args.install_base,
+                'install',
                 '--record', os.path.join(args.build_base, 'install.log')]
+            # Extract and explicitly pass install-scripts to setuptools.
+            # When part of a virtual environment, this option is specifically
+            # ignored in configuration files by setuptools, but not on the
+            # command line.
+            install_scripts = _get_install_scripts(args.path)
+            if install_scripts:
+                cmd += ['--install-scripts', install_scripts]
             if 'egg_info' in available_commands:
                 # prevent installation of dependencies specified in setup.py
                 cmd.append('--single-version-externally-managed')
             self._append_install_layout(args, cmd)
+            if setup_py_data.get('data_files'):
+                cmd += ['install_data']
+                if rc is not None:
+                    cmd += ['--force']
             completed = await run(
                 self.context, cmd, cwd=args.path, env=env)
             if completed.returncode:
                 return completed.returncode
 
         else:
-            self._undo_install(pkg, args, setup_py_data, python_lib)
+            rc = self._undo_install(pkg, args, setup_py_data, python_lib)
+            if rc:
+                return rc
             temp_symlinks = self._symlinks_in_build(args, setup_py_data)
 
             # invoke `setup.py develop` step in build space
@@ -105,17 +171,18 @@ class PythonBuildTask(TaskExtensionPoint):
             try:
                 # --editable causes this to skip creating/editing the
                 # easy-install.pth file
-                cmd = [
-                    executable, 'setup.py',
-                    'develop', '--prefix', args.install_base,
+                cmd = _PYTHON_CMD + [
+                    'setup.py',
+                    'develop',
                     '--editable',
                     '--build-directory',
                     os.path.join(args.build_base, 'build'),
                     '--no-deps',
                 ]
                 if setup_py_data.get('data_files'):
-                    cmd += ['install_data', '--install-dir', args.install_base]
-                self._append_install_layout(args, cmd)
+                    cmd += ['symlink_data']
+                    if rc is not None:
+                        cmd += ['--force']
                 completed = await run(
                     self.context, cmd, cwd=args.build_base, env=env)
             finally:
@@ -146,7 +213,7 @@ class PythonBuildTask(TaskExtensionPoint):
 
     async def _get_available_commands(self, path, env):
         output = await check_output(
-            [executable, 'setup.py', '--help-commands'], cwd=path, env=env)
+            _PYTHON_CMD + ['setup.py', '--help-commands'], cwd=path, env=env)
         commands = set()
         for line in output.splitlines():
             if not line.startswith(b'  '):
@@ -159,25 +226,59 @@ class PythonBuildTask(TaskExtensionPoint):
                 continue
             commands.add(
                 line[2:index].decode(locale.getpreferredencoding(False)))
+        logger.debug(f"Available setuptools commands: {', '.join(commands)}")
         return commands
 
+    async def _get_available_options(self, path, env, command):
+        output = await check_output(
+            _PYTHON_CMD + ['setup.py', '--help', command], cwd=path, env=env)
+        options = set()
+        for line in output.splitlines():
+            if not line.startswith(b'  --'):
+                continue
+            try:
+                index = line.index(b' ', 4)
+            except ValueError:
+                continue
+            if index == 4:
+                continue
+            options.add(
+                line[2:index].decode(locale.getpreferredencoding(False)))
+        logger.debug(
+            f"Available setuptools '{command}' options: {', '.join(options)}")
+        return options
+
     async def _undo_develop(self, pkg, args, env):
+        """
+        Undo a previously run 'develop' command.
+
+        :returns: None if develop was not previously detected, otherwise
+                  an integer return code where zero indicates success.
+        """
         # undo previous develop if .egg-info is found and develop symlinks
         egg_info = os.path.join(
             args.build_base, '%s.egg-info' % pkg.name.replace('-', '_'))
         setup_py_build_space = os.path.join(args.build_base, 'setup.py')
         if os.path.exists(egg_info) and os.path.islink(setup_py_build_space):
-            cmd = [
-                executable, 'setup.py',
-                'develop', '--prefix', args.install_base,
+            cmd = _PYTHON_CMD + [
+                'setup.py',
+                'develop',
                 '--uninstall', '--editable',
                 '--build-directory', os.path.join(args.build_base, 'build')
             ]
             completed = await run(
                 self.context, cmd, cwd=args.build_base, env=env)
+            if not completed.returncode:
+                os.remove(setup_py_build_space)
             return completed.returncode
 
     def _undo_install(self, pkg, args, setup_py_data, python_lib):
+        """
+        Undo a previously run 'install' command.
+
+        :returns: None if install was not previously detected, otherwise
+                  an integer return code where zero indicates success.
+        """
         # undo previous install if install.log is found
         install_log = os.path.join(args.build_base, 'install.log')
         if not os.path.exists(install_log):
@@ -189,9 +290,8 @@ class PythonBuildTask(TaskExtensionPoint):
         for module_name in packages:
             if module_name in sys.modules:
                 logger.warning(
-                    "Switching to 'develop' for package '{pkg.name}' while it "
-                    'is being used might result in import errors later'
-                    .format_map(locals()))
+                    f"Switching to 'develop' for package '{pkg.name}' while "
+                    'it is being used might result in import errors later')
                 break
 
         # remove previously installed files
@@ -203,8 +303,7 @@ class PythonBuildTask(TaskExtensionPoint):
             if not line.startswith(python_lib):
                 logger.debug(
                     'While undoing a previous installation files outside the '
-                    'Python library path are being ignored: {line}'
-                    .format_map(locals()))
+                    f'Python library path are being ignored: {line}')
                 continue
             if not os.path.isdir(line):
                 os.remove(line)
@@ -219,6 +318,7 @@ class PythonBuildTask(TaskExtensionPoint):
             with suppress(OSError):
                 os.rmdir(d)
         os.remove(install_log)
+        return 0
 
     def _symlinks_in_build(self, args, setup_py_data):
         items = ['setup.py']
@@ -238,21 +338,19 @@ class PythonBuildTask(TaskExtensionPoint):
                 if package_dir[package] in package_dir:
                     package_dir_package = package_dir[package]
                     raise RuntimeError(
-                        "The package_dir contains a mapping from '{package}' "
-                        "to '{package_dir_package}' which is also a key"
-                        .format_map(locals()))
+                        f"The package_dir contains a mapping from '{package}' "
+                        f"to '{package_dir_package}' which is also a key")
                 if package_dir[package] in packages:
                     package_dir_package = package_dir[package]
                     raise RuntimeError(
-                        "The value '{package_dir_package}' in package_dir is "
-                        'also listed in packages'
-                        .format_map(locals()))
+                        f"The value '{package_dir_package}' in package_dir is "
+                        'also listed in packages')
             elif '' in package_dir:
                 items.append(os.path.join(package_dir[''], package))
             else:
                 items.append(package)
         # relative python-ish paths are allowed as entries in py_modules, see:
-        # https://docs.python.org/3.5/distutils/setupscript.html#listing-individual-modules
+        # https://docs.python.org/3.6/distutils/setupscript.html#listing-individual-modules
         py_modules = setup_py_data.get('py_modules')
         if py_modules:
             py_modules_list = [
@@ -260,8 +358,7 @@ class PythonBuildTask(TaskExtensionPoint):
             for py_module in py_modules_list:
                 if not os.path.exists(os.path.join(args.path, py_module)):
                     raise RuntimeError(
-                        "Provided py_modules '{py_module}' does not exist"
-                        .format_map(locals()))
+                        f"Provided py_modules '{py_module}' does not exist")
             items += py_modules_list
         data_files = get_data_files_mapping(
             setup_py_data.get('data_files') or [])
@@ -306,9 +403,13 @@ class PythonBuildTask(TaskExtensionPoint):
         return temp_symlinks
 
     def _get_python_lib(self, args):
-        path = get_python_lib(prefix=args.install_base)
+        path = get_python_install_path('purelib', {'base': args.install_base})
         return os.path.relpath(path, start=args.install_base)
 
     def _append_install_layout(self, args, cmd):
+        # Debian patches sysconfig to return a path containing dist-packages
+        # instead of site-packages when using the default install scheme.
+        # TODO(sloretz) this is potentially unused now that
+        # get_python_install_path avoids the deb_system scheme.
         if 'dist-packages' in self._get_python_lib(args):
             cmd += ['--install-layout', 'deb']

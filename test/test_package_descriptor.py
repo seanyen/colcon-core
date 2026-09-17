@@ -1,9 +1,12 @@
 # Copyright 2016-2018 Dirk Thomas
 # Licensed under the Apache License, Version 2.0
 
+from collections import defaultdict
 import os
 from pathlib import Path
+from unittest.mock import patch
 
+from colcon_core.dependency_descriptor import DependencyDescriptor
 from colcon_core.package_descriptor import PackageDescriptor
 import pytest
 
@@ -48,7 +51,8 @@ def test_get_dependencies():
     assert "'self'" in str(e.value)
 
 
-def test_get_recursive_dependencies():
+@pytest.fixture
+def recursive_dependencies():
     d = PackageDescriptor('/some/path')
     d.name = 'A'
     d.dependencies['build'].add('B')
@@ -57,9 +61,9 @@ def test_get_recursive_dependencies():
 
     d1 = PackageDescriptor('/other/path')
     d1.name = 'B'
-    d1.dependencies['build'].add('e')
-    d1.dependencies['run'].add('F')
-    d1.dependencies['test'].add('G')
+    d1.dependencies['build'].add(DependencyDescriptor('e'))
+    d1.dependencies['run'].add(DependencyDescriptor('F'))
+    d1.dependencies['test'].add(DependencyDescriptor('G'))
 
     d2 = PackageDescriptor('/another/path')
     d2.name = 'd'
@@ -69,6 +73,7 @@ def test_get_recursive_dependencies():
     d3.dependencies['build'].add('h')
     d3.dependencies['test'].add('G')
     d3.dependencies['test'].add('I')
+    d3.dependencies['test'].add('J')
 
     d4 = PackageDescriptor('/more/path')
     d4.name = 'G'
@@ -76,13 +81,48 @@ def test_get_recursive_dependencies():
 
     d5 = PackageDescriptor('/yet-more/path')
     d5.name = 'I'
+    d5.dependencies['build'].add('K')
     # circular dependencies should be ignored
     d5.dependencies['run'].add('A')
 
-    rec_deps = d.get_recursive_dependencies(
-        {d, d1, d2, d3, d4, d5},
+    d6 = PackageDescriptor('/paths/galore')
+    d6.name = 'J'
+
+    d7 = PackageDescriptor('/never/enough/paths')
+    d7.name = 'K'
+
+    return d, {d, d1, d2, d3, d4, d5, d6, d7}
+
+
+@patch(
+    'colcon_core.feature_flags.get_feature_flags',
+    lambda: ['restore_build_isolation'])
+def test_get_recursive_dependencies(recursive_dependencies):
+    desc, all_descs = recursive_dependencies
+    rec_deps = desc.get_recursive_dependencies(
+        all_descs,
         direct_categories=('build', 'run'),
         recursive_categories=('run', 'test'))
+    assert rec_deps == {
+        # direct dependencies
+        'B',
+        # recursive dependencies
+        'F', 'G', 'I', 'J',
+    }
+
+
+@patch(
+    'colcon_core.feature_flags.get_feature_flags',
+    lambda: ['restore_build_isolation'])
+def test_get_recursive_dependencies_map(recursive_dependencies):
+    recursive_categories = defaultdict(lambda: ('run', 'test'))
+    recursive_categories['run'] = ('run',)
+
+    desc, all_descs = recursive_dependencies
+    rec_deps = desc.get_recursive_dependencies(
+        all_descs,
+        direct_categories=('build', 'run'),
+        recursive_categories=recursive_categories)
     assert rec_deps == {
         # direct dependencies
         'B',

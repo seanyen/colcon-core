@@ -18,17 +18,15 @@ def get_config_path():
     """
     Get the base path for configuration files.
 
-    :function:`set_default_config_path` must have been called before.
+    :func:`set_default_config_path` must have been called before.
 
     :returns: The base path for configuration files
     :rtype: Path
     """
-    global _config_path_env_var
     if _config_path_env_var is not None:
         path = os.environ.get(_config_path_env_var)
         if path:
             return Path(str(path))
-    global _config_path
     assert _config_path is not None
     return _config_path
 
@@ -54,7 +52,7 @@ def set_default_config_path(*, path, env_var=None):
     _config_path = Path(str(path))
     _config_path_env_var = env_var
     config_path = get_config_path()
-    logger.info("Using config path '{config_path}'".format_map(locals()))
+    logger.info(f"Using config path '{config_path}'")
 
 
 def _reset_config_path_globals():
@@ -74,13 +72,11 @@ def get_log_path():
     """
     Get the base path for logging.
 
-    :function:`set_default_log_path` must have been called before.
+    :func:`set_default_log_path` must have been called before.
 
     :returns: The base path for logging or None if logging is disabled
     :rtype: Path or None
     """
-    global _log_base_path
-    global _log_base_path_env_var
     path = None
     if _log_base_path is not None:
         path = _log_base_path
@@ -90,7 +86,6 @@ def get_log_path():
     ):
         path = os.environ.get(_log_base_path_env_var)
     else:
-        global _log_base_path_default
         path = _log_base_path_default
 
     if path == os.devnull:
@@ -152,7 +147,7 @@ def create_log_path(verb_name):
     """
     Create a not yet existing logging directory.
 
-    The logging directory returned by :function:`get_log_path` must not yet
+    The logging directory returned by :func:`get_log_path` must not yet
     exist on the first call of this function.
     If it does exist the function will append a serial number to the path until
     the path doesn't exist and can be created.
@@ -202,7 +197,7 @@ def create_log_path(verb_name):
             path = path_with_suffix
             break
 
-    logger.info("Using log path '{path}'".format_map(locals()))
+    logger.info(f"Using log path '{path}'")
 
     # ensure the base log path has an ignore marker file
     # to avoid recursively crawling through log directories
@@ -211,11 +206,13 @@ def create_log_path(verb_name):
     ignore_marker.touch()
 
     # create latest symlinks
-    _create_symlink(
-        path, path.parent / 'latest_{verb_name}'.format_map(locals()))
-    _create_symlink(
-        path.parent / 'latest_{verb_name}'.format_map(locals()),
-        path.parent / 'latest')
+    if verb_name is None:
+        _create_symlink(path, path.parent / 'latest')
+    else:
+        _create_symlink(path, path.parent / f'latest_{verb_name}')
+        _create_symlink(
+            path.parent / f'latest_{verb_name}',
+            path.parent / 'latest')
 
 
 def _reset_log_path_creation_global():

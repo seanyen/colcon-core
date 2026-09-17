@@ -65,7 +65,7 @@ class PackageAugmentationExtensionPoint:
         raise NotImplementedError()
 
 
-def get_package_augmentation_extensions():
+def get_package_augmentation_extensions(*, group_name=None):
     """
     Get the available package augmentation extensions.
 
@@ -73,7 +73,9 @@ def get_package_augmentation_extensions():
 
     :rtype: OrderedDict
     """
-    extensions = instantiate_extensions(__name__)
+    if group_name is None:
+        group_name = __name__
+    extensions = instantiate_extensions(group_name)
     for name, extension in extensions.items():
         extension.PACKAGE_AUGMENTATION_NAME = name
     return order_extensions_by_priority(extensions)
@@ -103,8 +105,7 @@ def augment_packages(
             exc = traceback.format_exc()
             logger.error(
                 'Exception in package augmentation extension '
-                "'{extension.PACKAGE_AUGMENTATION_NAME}': "
-                '{e}\n{exc}'.format_map(locals()))
+                f"'{extension.PACKAGE_AUGMENTATION_NAME}': {e}\n{exc}")
             # skip failing extension, continue with next one
 
 
@@ -125,7 +126,7 @@ def update_descriptor(
 
     Any key-value pair not explicitly mentioned above is being used to update
     the metadata if the key is in the list of additional argument names.
-    See :function:`update_metadata` for details how the metadata is updated.
+    See :func:`update_metadata` for details how the metadata is updated.
 
     If the additional argument names is a list with the single value `*` all
     keys not explicitly mentioned above are being used to update the metadata.
@@ -143,7 +144,7 @@ def update_descriptor(
                 desc.dependencies[dep_type].add(d)
     # transfer type specific dependencies
     for dep_type in dep_types:
-        key = '{dep_type}-dependencies'.format_map(locals())
+        key = f'{dep_type}-dependencies'
         if key in data:
             for d in data[key]:
                 desc.dependencies[dep_type].add(d)
@@ -159,8 +160,7 @@ def update_descriptor(
         # skip any of the already explicitly handled names
         ignored_names = ['name', 'type', 'dependencies', 'hooks']
         for dep_type in dep_types:
-            ignored_names.append(
-                '{dep_type}-dependencies'.format_map(locals()))
+            ignored_names.append(f'{dep_type}-dependencies')
         for name in data.keys():
             if name in ignored_names:
                 continue
@@ -215,10 +215,10 @@ def update_metadata(desc, key, value):
         old_value |= value
         return
 
-    if type(old_value) != type(value):
+    if type(old_value) is not type(value):
         logger.warning(
-            "update package '{desc.name}' metadata '{key}' from value "
-            "'{old_value}' to '{value}'".format_map(locals()))
+            f"update package '{desc.name}' metadata '{key}' from value "
+            f"'{old_value}' to '{value}'")
 
     # overwrite existing value
     # copy value to avoid changes to either of them to affect each other

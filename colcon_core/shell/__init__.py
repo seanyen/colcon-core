@@ -11,6 +11,8 @@ import sys
 import traceback
 import warnings
 
+from colcon_core.dependency_descriptor import DependencyDescriptor
+from colcon_core.environment_variable import EnvironDict
 from colcon_core.environment_variable import EnvironmentVariable
 from colcon_core.logging import colcon_logger
 from colcon_core.plugin_system import instantiate_extensions
@@ -41,7 +43,7 @@ class ShellExtensionPoint:
     """
 
     """The version of the shell extension interface."""
-    EXTENSION_POINT_VERSION = '2.1'
+    EXTENSION_POINT_VERSION = '2.2'
 
     """
     The default priority of shell extensions.
@@ -133,6 +135,8 @@ class ShellExtensionPoint:
         :param Path prefix_path: The path of the install prefix
         :param bool merge_install: The flag if all packages share the same
           install prefix
+        :returns: The relative paths to the created scripts
+        :rtype: list
         """
         raise NotImplementedError()
 
@@ -168,6 +172,8 @@ class ShellExtensionPoint:
         :param Path prefix_path: The package specific install prefix
         :param str pkg_name: The package name
         :param list hooks: The relative paths to the hook scripts
+        :returns: The relative paths to the created scripts
+        :rtype: list
         """
         raise NotImplementedError()
 
@@ -184,7 +190,11 @@ class ShellExtensionPoint:
         :param str pkg_name: The package name
         :param str name: The name of the environment variable
         :param str value: The value to be set. If an empty string is passed the
-          environment variable should be set to the prefix path.
+          environment variable should be set to the prefix path at the time the
+          hook is sourced (from COLCON_CURRENT_PREFIX).
+          Note that the install-space may have been relocated, and the final
+          value may differ from the value of argument prefix_path, where
+          the hook was originally installed to.
         :returns: The relative path to the created hook script
         :rtype: Path
         """
@@ -251,7 +261,7 @@ class ShellExtensionPoint:
 
         The method must be overridden in a subclass if and only if the shell
         extension represents a "primary" shell (as defined in
-        :attribute:`ShellExtensionPoint.PRIORITY`).
+        :attr:`ShellExtensionPoint.PRIORITY`).
 
         :param str task_name: The name of the task
         :param Path build_base: The base path of the build directory
@@ -265,7 +275,7 @@ class ShellExtensionPoint:
         raise NotImplementedError()
 
 
-def get_shell_extensions():
+def get_shell_extensions(*, group_name=None):
     """
     Get the available shell extensions.
 
@@ -274,7 +284,9 @@ def get_shell_extensions():
 
     :rtype: OrderedDict
     """
-    extensions = instantiate_extensions(__name__)
+    if group_name is None:
+        group_name = __name__
+    extensions = instantiate_extensions(group_name)
     for name, extension in extensions.items():
         extension.SHELL_NAME = name
     return order_extensions_grouped_by_priority(extensions)
@@ -300,13 +312,13 @@ async def get_command_environment(task_name, build_base, dependencies):
             except NotImplementedError:
                 # skip extension, continue with next one
                 logger.debug(
-                    "Skip shell extension '{extension.SHELL_NAME}' for "
-                    'command environment'.format_map(locals()))
+                    f"Skip shell extension '{extension.SHELL_NAME}' for "
+                    'command environment')
             except SkipExtensionException as e:  # noqa: F841
                 # skip extension, continue with next one
                 logger.info(
-                    "Skip shell extension '{extension.SHELL_NAME}' for "
-                    'command environment: {e}'.format_map(locals()))
+                    f"Skip shell extension '{extension.SHELL_NAME}' for "
+                    f'command environment: {e}')
             except (CancelledError, RuntimeError):
                 # re-raise same exception to handle it in the executor
                 # without a traceback
@@ -316,11 +328,44 @@ async def get_command_environment(task_name, build_base, dependencies):
                 exc = traceback.format_exc()
                 logger.error(
                     'Exception in shell extension '
-                    "'{extension.SHELL_NAME}': {e}\n{exc}"
-                    .format_map(locals()))
+                    f"'{extension.SHELL_NAME}': {e}\n{exc}")
                 # skip failing extension, continue with next one
     raise RuntimeError(
         'Could not find a shell extension for the command environment')
+
+
+async def get_null_separated_environment_variables(
+    cmd, *, cwd=None, shell=True,
+):
+    """
+    Get null-separated environment variables from the output of the command.
+
+    :param args: the sequence of program arguments
+    :param cwd: the working directory for the subprocess
+    :param shell: whether to use the shell as the program to execute
+    :rtype: dict
+    """
+    encoding = locale.getpreferredencoding()
+    output = await check_output(cmd, cwd=cwd, shell=shell)
+    env = EnvironDict()
+    for kvp in output.split(b'\0'):
+        kvp = kvp.rstrip()
+        if not kvp:
+            continue
+        try:
+            parts = kvp.decode(encoding).split('=', 1)
+        except UnicodeDecodeError:
+            kvp_replaced = kvp.decode(encoding=encoding, errors='replace')
+            logger.warning(
+                'Failed to decode line from the environment using the '
+                f"encoding '{encoding}': {kvp_replaced}")
+            continue
+        if len(parts) != 2:
+            # skip lines which don't contain an equal sign
+            continue
+        env[parts[0]] = parts[1]
+    assert len(env) > 0, "The environment shouldn't be empty"
+    return env
 
 
 async def get_environment_variables(cmd, *, cwd=None, shell=True):
@@ -333,7 +378,7 @@ async def get_environment_variables(cmd, *, cwd=None, shell=True):
     :rtype: dict
     """
     output = await check_output(cmd, cwd=cwd, shell=shell)
-    env = OrderedDict()
+    env = EnvironDict()
     for line in output.splitlines():
         line = line.rstrip()
         if not line:
@@ -345,7 +390,7 @@ async def get_environment_variables(cmd, *, cwd=None, shell=True):
             line_replaced = line.decode(encoding=encoding, errors='replace')
             logger.warning(
                 'Failed to decode line from the environment using the '
-                "encoding '{encoding}': {line_replaced}".format_map(locals()))
+                f"encoding '{encoding}': {line_replaced}")
             continue
         parts = line.split('=', 1)
         if sys.platform != 'win32':
@@ -409,8 +454,7 @@ def create_environment_hook(
                     exc = traceback.format_exc()
                     logger.error(
                         'Exception in shell extension '
-                        "'{extension.SHELL_NAME}': {e}\n{exc}"
-                        .format_map(locals()))
+                        f"'{extension.SHELL_NAME}': {e}\n{exc}")
                     # skip failing extension, continue with next one
                     continue
                 hooks.append(hook)
@@ -428,8 +472,7 @@ def create_environment_hook(
                     exc = traceback.format_exc()
                     logger.error(
                         'Exception in shell extension '
-                        "'{extension.SHELL_NAME}': {e}\n{exc}"
-                        .format_map(locals()))
+                        f"'{extension.SHELL_NAME}': {e}\n{exc}")
                     # skip failing extension, continue with next one
                     continue
                 hooks.append(hook)
@@ -463,7 +506,6 @@ def get_colcon_prefix_path(*, skip=None):
         "'colcon_core.shell.get_colcon_prefix_path()' has been deprecated, "
         "use 'colcon_core.prefix_path.get_chained_prefix_path()' instead",
         stacklevel=2)
-    global _get_colcon_prefix_path_warnings
     prefix_path = []
     colcon_prefix_path = os.environ.get('COLCON_PREFIX_PATH', '')
     for path in colcon_prefix_path.split(os.pathsep):
@@ -474,13 +516,17 @@ def get_colcon_prefix_path(*, skip=None):
         if not os.path.exists(path):
             if path not in _get_colcon_prefix_path_warnings:
                 logger.warning(
-                    "The path '{path}' in the environment variable "
-                    "COLCON_PREFIX_PATH doesn't exist".format_map(locals()))
+                    f"The path '{path}' in the environment variable "
+                    "COLCON_PREFIX_PATH doesn't exist")
             _get_colcon_prefix_path_warnings.add(path)
             continue
         prefix_path.append(path)
 
     return prefix_path
+
+
+def _get_pkg_name(dep):
+    return dep.package_name if isinstance(dep, DependencyDescriptor) else dep
 
 
 def check_dependency_availability(dependencies, *, script_filename):
@@ -500,21 +546,23 @@ def check_dependency_availability(dependencies, *, script_filename):
     """
     missing = OrderedDict()
     # check if the dependency exists in the install base of this workspace
-    for pkg_name, pkg_install_base in dependencies.items():
+    for dep, pkg_install_base in dependencies.items():
+        pkg_name = _get_pkg_name(dep)
         pkg_script = Path(
             pkg_install_base) / 'share' / pkg_name / script_filename
         if not pkg_script.exists():
-            missing[pkg_name] = pkg_script
+            missing[dep] = pkg_script
 
     # check if the dependency exists in any other prefix path
     packages_in_env = find_installed_packages_in_environment()
     env_packages = OrderedDict()
-    for pkg_name, pkg_install_base in list(missing.items()):
+    for dep, pkg_install_base in list(missing.items()):
+        pkg_name = _get_pkg_name(dep)
         if pkg_name in packages_in_env:
             env_packages[pkg_name] = packages_in_env[pkg_name]
             # no need to source any script for this package
-            del dependencies[pkg_name]
-            del missing[pkg_name]
+            del dependencies[dep]
+            del missing[dep]
 
     # warn about using packages from the environment
     if env_packages:
@@ -533,7 +581,7 @@ def check_dependency_availability(dependencies, *, script_filename):
             'Failed to find the following files:' +
             ''.join('\n- %s' % path for path in missing.values()) +
             '\nCheck that the following packages have been built:' +
-            ''.join('\n- %s' % name for name in missing.keys()))
+            ''.join('\n- %s' % _get_pkg_name(dep) for dep in missing.keys()))
 
 
 def find_installed_packages_in_environment():
@@ -551,8 +599,7 @@ def find_installed_packages_in_environment():
         prefix_path = Path(prefix_path)
         pkgs = find_installed_packages(prefix_path)
         if pkgs is None:
-            logger.debug(
-                "Ignoring prefix path '{prefix_path}'".format_map(locals()))
+            logger.debug(f"Ignoring prefix path '{prefix_path}'")
             continue
         for pkg_name in sorted(pkgs.keys()):
             # ignore packages with the same name in "lower" prefix path
@@ -589,7 +636,7 @@ class FindInstalledPackagesExtensionPoint:
         raise NotImplementedError()
 
 
-def get_find_installed_packages_extensions():
+def get_find_installed_packages_extensions(*, group_name=None):
     """
     Get the available package identification extensions.
 
@@ -598,7 +645,10 @@ def get_find_installed_packages_extensions():
 
     :rtype: OrderedDict
     """
-    extensions = instantiate_extensions(__name__ + '.find_installed_packages')
+    if group_name is None:
+        group_name = __name__
+    extensions = instantiate_extensions(
+        group_name + '.find_installed_packages')
     for name, extension in extensions.items():
         extension.PACKAGE_IDENTIFICATION_NAME = name
     return order_extensions_grouped_by_priority(extensions)
@@ -635,16 +685,16 @@ def find_installed_packages(install_base: Path):
         for pkg, path in ext_packages.items():
             if not path.exists():
                 logger.warning(
-                    "Ignoring '{pkg}' found at '{path}' because the path"
-                    ' does not exist.'.format_map(locals()))
+                    f"Ignoring '{pkg}' found at '{path}' because the path"
+                    ' does not exist.')
                 continue
             if pkg in packages and not path.samefile(packages[pkg]):
                 # Same package found at different paths in the same prefix
                 first_path = packages[pkg]
                 logger.warning(
-                    "The package '{pkg}' previously found at "
-                    "'{first_path}' was found again at '{path}'."
-                    " Ignoring '{path}'".format_map(locals()))
+                    f"The package '{pkg}' previously found at "
+                    f"'{first_path}' was found again at '{path}'."
+                    f" Ignoring '{path}'")
             else:
                 packages[pkg] = path
 

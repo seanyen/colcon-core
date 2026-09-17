@@ -1,21 +1,28 @@
-Description: Remove dependencies unavailable from Debian packages
+Description: Remove optional dependencies from Debian packages
  Otherwise being listed there but not being installed would result in a
  runtime error by pkg_resources.
 Author: Dirk Thomas <web@dirk-thomas.net>
 
 --- setup.cfg	2018-05-27 11:22:33.000000000 -0700
 +++ setup.cfg.patched	2018-05-27 11:22:33.000000000 -0700
-@@ -32,8 +32,11 @@
- 	EmPy
+@@ -33,11 +33,16 @@
+ 	importlib-metadata; python_version < "3.8"
+ 	packaging
  	pytest
- 	pytest-cov
+-	pytest-cov
 -	pytest-repeat
 -	pytest-rerunfailures
-+	# the following dependencies are not available from Debian
++	# the following dependencies are optional when installing from Debians
 +	# so listing them here but not installing them in the Debian package
 +	# would result in a runtime error by pkg_resources
++	# pytest-cov
 +	# pytest-repeat
 +	# pytest-rerunfailures
- 	setuptools>=30.3.0
+ 	setuptools>=30.3.0,<80
+-	tomli>=1.0.0; python_version < "3.11"
++	# toml is also supported, rely on deb dependencies to select the
++	# appropriate package
++	# tomli>=1.0.0; python_version < "3.11"
  packages = find:
  zip_safe = false
+ 

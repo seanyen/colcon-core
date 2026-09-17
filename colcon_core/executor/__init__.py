@@ -61,7 +61,7 @@ class Job:
         self._event_queue = event_queue
 
         self.put_event_into_queue(JobQueued(
-            self.task_context.pkg.name, self.task_context.dependencies))
+            self.identifier, self.task_context.dependencies))
 
     async def __call__(self, *args, **kwargs):
         """
@@ -80,7 +80,7 @@ class Job:
         :returns: The return code of the invoked task
         :raises Exception: Any exception the invoked task raises
         """
-        self.put_event_into_queue(JobStarted(self.task_context.pkg.name))
+        self.put_event_into_queue(JobStarted(self.identifier))
 
         # replace function to use this job as the event context
         self.task_context.put_event_into_queue = self.put_event_into_queue
@@ -100,7 +100,7 @@ class Job:
             if self.returncode is None:
                 self.returncode = rc or 0
             self.put_event_into_queue(
-                JobEnded(self.task_context.pkg.name, self.returncode))
+                JobEnded(self.identifier, self.returncode))
         return self.returncode
 
     def put_event_into_queue(self, event):
@@ -141,7 +141,7 @@ class ExecutorExtensionPoint:
     """
 
     """The version of the executor extension interface."""
-    EXTENSION_POINT_VERSION = '1.0'
+    EXTENSION_POINT_VERSION = '1.1'
 
     """The default priority of executor extensions."""
     PRIORITY = 100
@@ -182,6 +182,7 @@ class ExecutorExtensionPoint:
         :param arguments: The passed arguments
 
         The deprecated API accepts the following separate arguments:
+
         :param args: The parsed command line arguments
         :param jobs: The jobs
         :param on_error: The decision how to proceed when one job fails
@@ -191,13 +192,21 @@ class ExecutorExtensionPoint:
         """
         raise NotImplementedError()
 
+    def put_event_into_queue(self, event):
+        """
+        Post a message event into the event queue.
+
+        :param event: The event
+        """
+        self._event_controller.get_queue().put((event, self))
+
     def _flush(self):
         if self._event_controller is None:
             return
         self._event_controller.flush()
 
 
-def get_executor_extensions():
+def get_executor_extensions(*, group_name=None):
     """
     Get the available executor extensions.
 
@@ -206,7 +215,9 @@ def get_executor_extensions():
 
     :rtype: OrderedDict
     """
-    extensions = instantiate_extensions(__name__)
+    if group_name is None:
+        group_name = __name__
+    extensions = instantiate_extensions(group_name)
     for name, extension in extensions.items():
         extension.EXECUTOR_NAME = name
     return order_extensions_grouped_by_priority(extensions)
@@ -234,7 +245,7 @@ def add_executor_arguments(parser):
                 # to mention the available options
                 desc = '<no description>'
             # it requires a custom formatter to maintain the newline
-            descriptions += '\n* {key}: {desc}'.format_map(locals())
+            descriptions += f'\n* {key}: {desc}'
     assert keys, 'No executor extensions found'
 
     default = os.environ.get(DEFAULT_EXECUTOR_ENVIRONMENT_VARIABLE.name)
@@ -243,8 +254,8 @@ def add_executor_arguments(parser):
 
     group.add_argument(
         '--executor', type=str, choices=keys, default=default,
-        help='The executor to process all packages (default: {default})'
-             '{descriptions}'.format_map(locals()))
+        help=f'The executor to process all packages (default: %(default)s)'
+             f'{descriptions}')  # noqa: E131
 
     for priority in extensions.keys():
         extensions_same_prio = extensions[priority]
@@ -257,8 +268,7 @@ def add_executor_arguments(parser):
                 exc = traceback.format_exc()
                 logger.error(
                     'Exception in executor extension '
-                    "'{extension.EXECUTOR_NAME}': {e}\n{exc}"
-                    .format_map(locals()))
+                    f"'{extension.EXECUTOR_NAME}': {e}\n{exc}")
                 # skip failing extension, continue with next one
 
 
@@ -270,14 +280,14 @@ def execute_jobs(
     Execute jobs.
 
     The overview of the process:
-    * One executor extension is being chosen based on the command line
-      arguments.
-    * Create an event controller.
-    * Pass the event controller to the executor extension.
-    * Pass the event queue to all jobs.
-    * Start the event controller.
-    * Invoke the executor extension to execute the jobs.
-    * Join the event controller.
+      * One executor extension is being chosen based on the command line
+        arguments.
+      * Create an event controller.
+      * Pass the event controller to the executor extension.
+      * Pass the event queue to all jobs.
+      * Start the event controller.
+      * Invoke the executor extension to execute the jobs.
+      * Join the event controller.
 
     :param jobs: The ordered dictionary of jobs
     :param on_error: The decision how to proceed when one job fails
@@ -325,9 +335,8 @@ def execute_jobs(
             # fallback to legacy API
             assert 'abort_on_error' in signature.parameters
             warnings.warn(
-                "The ExecutorExtensionPoint '{executor.EXECUTOR_NAME}' uses a "
-                "deprecated signature for the 'execute' method"
-                .format_map(locals()))
+                f"The ExecutorExtensionPoint '{executor.EXECUTOR_NAME}' uses "
+                "a deprecated signature for the 'execute' method")
             kwargs['abort_on_error'] = on_error == OnError.interrupt
 
         try:
@@ -336,8 +345,8 @@ def execute_jobs(
             # catch exceptions raised in executor extension
             exc = traceback.format_exc()
             logger.error(
-                "Exception in executor extension '{executor.EXECUTOR_NAME}': "
-                '{e}\n{exc}'.format_map(locals()))
+                f"Exception in executor extension '{executor.EXECUTOR_NAME}': "
+                f'{e}\n{exc}')
             rc = 1
         finally:
             # generate an event for every skipped job

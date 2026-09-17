@@ -23,7 +23,7 @@ class SetuppyPythonTestingStep(PythonTestingStepExtensionPoint):
             nargs='*', metavar='*', type=str.lstrip,
             help='Pass arguments to Python unittests. '
             'Arguments matching other options must be prefixed by a space,\n'
-            'e.g. --unittest-args " --help" (stdout might not be shown by '
+            'e.g. `--unittest-args " --help"` (stdout might not be shown by '
             'default, e.g. add `--event-handlers console_cohesion+`)')
 
     def match(self, context, env, setup_py_data):  # noqa: D102
@@ -33,14 +33,14 @@ class SetuppyPythonTestingStep(PythonTestingStepExtensionPoint):
         if context.args.retest_until_fail:
             logger.warning(
                 "Ignored '--retest-until-fail' for package "
-                "'{context.pkg.name}' since 'unittest' does not support the "
-                'usage'.format_map(locals()))
+                f"'{context.pkg.name}' since 'unittest' does not support the "
+                'usage')
 
         if context.args.retest_until_pass:
             logger.warning(
                 "Ignored '--retest-until-pass' for package "
-                "'{context.pkg.name}' since 'unittest' does not support the "
-                'usage'.format_map(locals()))
+                f"'{context.pkg.name}' since 'unittest' does not support the "
+                'usage')
 
         cmd = [executable, '-m', 'unittest', '-v']
         if context.args.unittest_args is not None:

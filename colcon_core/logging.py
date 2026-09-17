@@ -33,8 +33,8 @@ def set_logger_level_from_env(logger, env_name):
             numeric_log_level = get_numeric_log_level(log_level)
         except ValueError as e:  # noqa: F841
             logger.warning(
-                "environment variable '{env_name}' has unsupported value "
-                "'{log_level}', {e}".format_map(locals()))
+                f"environment variable '{env_name}' has unsupported value "
+                f"'{log_level}', {e}")
         else:
             logger.setLevel(numeric_log_level)
 
@@ -95,15 +95,15 @@ def add_file_handler(logger, path):
         if isinstance(handler, logging.StreamHandler):
             formatter = handler.formatter
             # filter colcon specific log messages from default stream handler
-            handler.addFilter(Filter(colcon_logger.name))
+            handler.addFilter(Filter(logger.name))
 
     # add a stream handler replacing the one filtered on the root logger
     handler = logging.StreamHandler()
     if formatter:
         # use same formatter as for stream handler
         handler.setFormatter(formatter)
-    handler.setLevel(colcon_logger.getEffectiveLevel())
-    colcon_logger.addHandler(handler)
+    handler.setLevel(logger.getEffectiveLevel())
+    logger.addHandler(handler)
 
     # add a file handler writing all log levels
     handler = logging.FileHandler(str(path))
@@ -114,16 +114,32 @@ def add_file_handler(logger, path):
             format_message = formatter.formatMessage
 
             def format_message_with_relative_time(record):
-                nonlocal format_message
                 return '[%.3fs] ' % (record.created - logging._startTime) + \
                     format_message(record)
             formatter.formatMessage = format_message_with_relative_time
         # use same formatter as for stream handler
         handler.setFormatter(formatter)
     handler.setLevel(1)
-    colcon_logger.addHandler(handler)
+    logger.addHandler(handler)
 
     # change the logger to handle all levels
-    colcon_logger.setLevel(1)
+    logger.setLevel(1)
 
     return handler
+
+
+def get_effective_console_level(logger):
+    """
+    Determine the effective log level of to the console.
+
+    On a typical logger, this is the same as getEffectiveLevel(). After a call
+    to add_file_handler, this will continue to return the same level though
+    getEffectiveLevel() will now always return ``1``.
+
+    :param logger: The logger to inspect
+    :returns: the log level
+    """
+    for handler in logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            return handler.level
+    return logger.getEffectiveLevel()
